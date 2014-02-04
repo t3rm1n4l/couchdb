@@ -27,7 +27,7 @@
 -define(WRITE_QUEUE_SIZE, 512 * 1024).
 
 % incremental updates
--define(INC_MAX_TMP_FILE_SIZE, 31457280).
+-define(INC_MAX_TMP_FILE_SIZE, 52428800).
 -define(MIN_BATCH_SIZE_PER_VIEW, 65536).
 
 % For file sorter and file merger commands.
