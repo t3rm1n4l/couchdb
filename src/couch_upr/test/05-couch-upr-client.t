@@ -186,11 +186,9 @@ test() ->
     StreamRemoveResp1 = couch_upr_client:remove_stream(Pid, 1),
     etap:is(StreamRemoveResp1, {error, vbucket_stream_not_found},
         "Correct error on trying to remove non-existing stream"),
-
     couch_upr_fake_server:continue_mutations(),
 
     % Test with too large failover log
-
     TooLargeFailoverLog = [{I, I} ||
         I <- lists:seq(0, ?UPR_MAX_FAILOVER_LOG_SIZE)],
     PartId = 1,
@@ -200,9 +198,47 @@ test() ->
     etap:is(TooLargeError, {error, too_large_failover_log},
         "Too large failover log returns correct error"),
 
+    % Tests for flow control
+    couch_upr_fake_server:pause_mutations(),
+    couch_upr_client:set_buffer_size(Pid, 50),
+
+    {StreamReq0_4, _} = couch_upr_client:add_stream(Pid, 0,
+        lists:nth(1, InitialFailoverLog0), 0, 500),
+
+    Throttled0 = try_until_throttled(Pid, 100),
+    etap:is(Throttled0, true, "Throttled stream events queue when buffer became full"),
+
+    Throttled1 = try_until_unthrottled(Pid, StreamReq0_4, 5),
+    etap:is(Throttled1, false, "Throttling disabled when drained buffered events queue"),
 
     couch_set_view_test_util:stop_server(),
     ok.
+
+try_until_throttled(Pid, 0) ->
+    false;
+try_until_throttled(Pid, N) ->
+    Throttled = gen_server:call(Pid, throttled),
+    case Throttled of
+    true ->
+        true;
+    false ->
+        ok = couch_upr_fake_server:send_single_mutation(),
+        timer:sleep(1),
+        try_until_throttled(Pid, N-1)
+    end.
+
+try_until_unthrottled(Pid, _ReqId, 0) ->
+    true;
+try_until_unthrottled(Pid, ReqId, N) ->
+    Throttled = gen_server:call(Pid, throttled),
+    case Throttled of
+    false ->
+        false;
+    true ->
+        couch_upr_client:get_stream_event(Pid, ReqId),
+        try_until_unthrottled(Pid, ReqId, N-1)
+    end.
+
 
 setup_test() ->
     couch_set_view_test_util:delete_set_dbs(test_set_name(), num_set_partitions()),
