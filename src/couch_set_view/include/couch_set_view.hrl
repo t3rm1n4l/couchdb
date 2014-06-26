@@ -260,7 +260,8 @@
     category = nil                          :: 'nil' | 'prod' | 'dev',
     stats_ets = nil                         :: atom(),
     header_pos = 0                          :: non_neg_integer(),
-    upr_pid = nil                           :: 'nil' | pid()
+    upr_pid = nil                           :: 'nil' | pid(),
+    upr_stats_pid = nil                     :: 'nil' | pid()
 }).
 
 -record(set_view_updater_stats, {

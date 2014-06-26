@@ -52,6 +52,7 @@
 -define(group_sig(State), (element(3, State#state.init_args))#set_view_group.sig).
 -define(group_id(State), (State#state.group)#set_view_group.name).
 -define(upr_pid(State), (State#state.group)#set_view_group.upr_pid).
+-define(stats_pid(State), (State#state.group)#set_view_group.upr_stats_pid).
 -define(category(State), (State#state.group)#set_view_group.category).
 -define(is_defined(State),
     (((State#state.group)#set_view_group.index_header)#set_view_index_header.num_partitions > 0)).
@@ -415,6 +416,9 @@ do_init({_, SetName, _} = InitArgs) ->
         ?LOG_INFO("Flow control buffer size is ~p bytes", [UprBufferSize]),
         {ok, UprPid} = couch_upr_client:start(UprName, SetName, User, Passwd,
             UprBufferSize),
+        StatsConnName = <<SetName/binary, "/", (Group#set_view_group.name)/binary>>,
+        {ok, UprStatsPid} = couch_upr_client:start(StatsConnName, SetName,
+               User, Passwd, UprBufferSize),
         State = #state{
             init_args = InitArgs,
             replica_group = ReplicaPid,
@@ -422,7 +426,8 @@ do_init({_, SetName, _} = InitArgs) ->
             group = Group#set_view_group{
                 ref_counter = RefCounter,
                 replica_pid = ReplicaPid,
-                upr_pid = UprPid
+                upr_pid = UprPid,
+                upr_stats_pid = UprStatsPid
             }
         },
         true = ets:insert(
@@ -1317,10 +1322,18 @@ handle_info({'EXIT', Pid, Reason}, #state{compactor_pid = Pid} = State) ->
 handle_info({'EXIT', Pid, Reason},
         #state{group = #set_view_group{upr_pid = Pid}} = State) ->
     ?LOG_ERROR("Set view `~s`, ~s (~s) group `~s`,"
-               " UPR process ~p died with unexpected reason: ~p",
+               " UPR streamer process ~p died with unexpected reason: ~p",
                [?set_name(State), ?type(State), ?category(State),
                 ?group_id(State), Pid, Reason]),
     {stop, {upr_died, Reason}, State};
+
+handle_info({'EXIT', Pid, Reason},
+        #state{group = #set_view_group{upr_stats_pid = Pid}} = State) ->
+    ?LOG_ERROR("Set view `~s`, ~s (~s) group `~s`,"
+               " UPR stats process ~p died with unexpected reason: ~p",
+               [?set_name(State), ?type(State), ?category(State),
+                ?group_id(State), Pid, Reason]),
+    {stop, {upr_stats_died, Reason}, State};
 
 handle_info({'EXIT', Pid, Reason}, State) ->
     ?LOG_ERROR("Set view `~s`, ~s (~s) group `~s`,"
@@ -1344,6 +1357,8 @@ terminate(Reason, #state{group = #set_view_group{sig = Sig} = Group} = State) ->
     couch_util:shutdown_sync(State3#state.compactor_pid),
     couch_util:shutdown_sync(State3#state.compactor_file),
     couch_util:shutdown_sync(State3#state.replica_group),
+    couch_util:shutdown_sync(?upr_pid(State3)),
+    couch_util:shutdown_sync(?stats_pid(State3)),
     Group = State#state.group,
     true = ets:delete(Group#set_view_group.stats_ets,
         ?set_view_group_stats_key(Group)),
@@ -1652,7 +1667,7 @@ get_group_info(State) ->
     PartVersions = lists:map(fun({PartId, PartVersion}) ->
         {couch_util:to_binary(PartId), [tuple_to_list(V) || V <- PartVersion]}
     end, ?set_partition_versions(Group)),
-    {ok, DbSeqs} = couch_set_view_util:get_seqs(?upr_pid(State), GroupPartitions),
+    {ok, DbSeqs} = couch_set_view_util:get_seqs(?stats_pid(State), GroupPartitions),
     [
         {signature, ?l2b(hex_sig(GroupSig))},
         {disk_size, Size},
@@ -2140,7 +2155,7 @@ persist_partition_states(State, ActiveList, PassiveList, CleanupList, PendingTra
     ok = set_state(ReplicaPid, ReplicasToMarkActive, [], ReplicasToCleanup2),
     % Need to update list of active partition sequence numbers for every blocked client.
     WaitList2 = update_waiting_list(
-        WaitList, ?upr_pid(State), ActiveList2, PassiveList3, CleanupList),
+        WaitList, ?stats_pid(State), ActiveList2, PassiveList3, CleanupList),
     State3 = State2#state{waiting_list = WaitList2},
     case (dict:size(Listeners) > 0) andalso (CleanupList /= []) of
     true ->
@@ -2611,13 +2626,13 @@ indexable_partition_seqs(#state{group = Group} = State) ->
     CurPartitions = [P || {P, _} <- ?set_seqs(Group)],
     {ok, CurSeqs} = case ?set_unindexable_seqs(Group) of
     [] ->
-        couch_set_view_util:get_seqs(?upr_pid(State), CurPartitions);
+        couch_set_view_util:get_seqs(?stats_pid(State), CurPartitions);
     _ ->
         ReplicasOnTransfer = ?set_replicas_on_transfer(Group),
         Partitions = ordsets:union(CurPartitions, ReplicasOnTransfer),
         % Index unindexable replicas on transfer though (as the reason for the
         % transfer is to become active and indexable).
-        couch_set_view_util:get_seqs(?upr_pid(State), Partitions)
+        couch_set_view_util:get_seqs(?stats_pid(State), Partitions)
     end,
     CurSeqs.
 
@@ -2625,7 +2640,7 @@ indexable_partition_seqs(#state{group = Group} = State) ->
 -spec active_partition_seqs(#state{}) -> partition_seqs().
 active_partition_seqs(#state{group = Group} = State) ->
     ActiveParts = couch_set_view_util:decode_bitmask(?set_abitmask(Group)),
-    {ok, CurSeqs} = couch_set_view_util:get_seqs(?upr_pid(State), ActiveParts),
+    {ok, CurSeqs} = couch_set_view_util:get_seqs(?stats_pid(State), ActiveParts),
     CurSeqs.
 
 
@@ -2688,7 +2703,7 @@ compact_group(#state{group = Group} = State) ->
 
 -spec stop_upr_streams(#state{}) -> ok.
 stop_upr_streams(State) ->
-    UprPid = ?upr_pid(State),
+    UprPid = ?stats_pid(State),
     ActiveStreams = couch_upr_client:list_streams(UprPid),
     lists:foreach(fun(ActiveStream) ->
         case couch_upr_client:remove_stream(UprPid, ActiveStream) of
@@ -3495,7 +3510,7 @@ process_monitor_partition_update(#state{group = Group} = State, PartId, Ref, Pid
     false ->
         ok
     end,
-    {ok, [{PartId, CurSeq}]} = couch_set_view_util:get_seqs(?upr_pid(State), [PartId]),
+    {ok, [{PartId, CurSeq}]} = couch_set_view_util:get_seqs(?stats_pid(State), [PartId]),
     case IsPending of
     true ->
         Seq = 0;
