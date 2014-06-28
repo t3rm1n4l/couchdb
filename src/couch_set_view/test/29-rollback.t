@@ -15,7 +15,7 @@
 % the License.
 
 -include_lib("couch_set_view/include/couch_set_view.hrl").
-
+-define(MAX_WAIT_TIME, 10 * 1000).
 
 test_set_name() -> <<"couch_test_set_index_rollback">>.
 num_set_partitions() -> 4.
@@ -26,7 +26,7 @@ num_docs() -> 128.  % keep it a multiple of num_set_partitions()
 main(_) ->
     test_util:init_code_path(),
 
-    etap:plan(63),
+    etap:plan(65),
     case (catch test()) of
         ok ->
             etap:end_tests();
@@ -41,7 +41,6 @@ test() ->
     couch_set_view_test_util:start_server(test_set_name()),
 
     etap:diag("Testing rollback of indexes"),
-
     test_rollback_once(10),
     %% Test with a header > 4k
     test_rollback_once(5000),
@@ -59,6 +58,7 @@ test() ->
     test_rollback_multiple_partitions(),
     test_rollback_multiple_partitions_missing(),
     test_rollback_unindexable_now_indexable_seqs(),
+    test_rollback_added_partitions(),
 
     couch_set_view_test_util:stop_server(),
     ok.
@@ -563,7 +563,6 @@ test_rollback_multiple_partitions_missing() ->
     etap:is(get_seq_from_group(), Expected, "Rollback is correct"),
     shutdown_group().
 
-
 test_rollback_unindexable_now_indexable_seqs() ->
     etap:diag("Testing rollback with header that contains unindexable "
         "partitions which are then made indexable"),
@@ -644,6 +643,47 @@ test_rollback_unindexable_now_indexable_seqs() ->
         [Seq || {_, Seq} <- GroupSeqsUnindexable2],
         "The most recent header of the truncated file has the same "
         "unindexable partition sequence numbers than the original header"),
+    shutdown_group().
+
+test_rollback_added_partitions() ->
+    etap:diag("Testing rollback after new partitons are added"),
+
+    setup_test(30, num_set_partitions() - 1),
+    Fd1 = get_fd(),
+    populate_set(1, num_docs()),
+    trigger_updater(),
+
+    GroupSeqs1 = get_seq_from_group(),
+    PartId = 0,
+    PartSeq = couch_set_view_util:get_part_seq(PartId, GroupSeqs1),
+
+    NewPartition = num_set_partitions() - 1,
+    ok = couch_set_view:set_partition_states(
+        mapreduce_view, test_set_name(), ddoc_id(), [NewPartition], [],
+        []),
+
+    populate_set(2 * num_docs() + 1, 3 * num_docs()),
+    trigger_updater(),
+
+    ok = rollback_group([{PartId, PartSeq}]),
+
+    Fd2 = get_fd(),
+    {ok, HeaderBin2, _Pos2} = couch_file:read_header_bin(Fd2),
+    Header2 = couch_set_view_util:header_bin_to_term(HeaderBin2),
+    PartVersions2 = Header2#set_view_index_header.partition_versions,
+    Seqs2 = Header2#set_view_index_header.seqs,
+    etap:is(length(PartVersions2), num_set_partitions(),
+        "Expected number of entries found in partitions version list"),
+
+    SeqsExpected = lists:map(
+        fun(PartId) ->
+            {PartId, (num_docs() * 2) div num_set_partitions()}
+        end, lists:seq(0, num_set_partitions() - 1)),
+    etap:is(Seqs2, SeqsExpected, "Seqs are present as expected"),
+
+    GroupPid = couch_set_view:get_group_pid(
+        mapreduce_view, test_set_name(), ddoc_id(), prod),
+    couch_set_view_test_util:wait_for_updater_to_finish(GroupPid, ?MAX_WAIT_TIME),
     shutdown_group().
 
 
