@@ -36,7 +36,7 @@
 -export([send_group_header/2, receive_group_header/3]).
 -export([remove_group_views/2, update_group_views/3]).
 -export([send_group_info/2]).
--export([get_seqs/2]).
+-export([get_seqs/2, filter_seqs/2]).
 
 
 -include("couch_db.hrl").
@@ -823,3 +823,11 @@ get_seqs(UprPid, Partitions) ->
         end
     end, Partitions, Seqs),
     {ok, SeqsResult}.
+
+
+-spec filter_seqs(list(partition_id()), partition_seqs()) ->
+                                        partition_seqs().
+filter_seqs(Parts, Seqs) ->
+    lists:filter(fun({PartId, _}) ->
+        lists:member(PartId, Parts)
+    end, Seqs).

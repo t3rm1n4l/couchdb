@@ -390,14 +390,6 @@ wait_result_loop(StartTime, DocLoader, Mapper, Writer, BlockedTime, OldGroup) ->
     end.
 
 
--spec filter_seqs(list(partition_id()), partition_seqs()) ->
-                                        partition_seqs().
-filter_seqs(Parts, Seqs) ->
-    lists:filter(fun({PartId, _}) ->
-        lists:member(PartId, Parts)
-    end, Seqs).
-
-
 load_changes(Owner, Updater, Group, MapQueue, ActiveParts, PassiveParts,
         EndSeqs, InitialBuild) ->
     #set_view_group{
@@ -538,7 +530,7 @@ load_changes(Owner, Updater, Group, MapQueue, ActiveParts, PassiveParts,
                   [GroupType, DDocId, SetName]),
         {ActiveChangesCount, MaxSeqs, PartVersions, Rollbacks} = lists:foldl(
             FoldFun, {0, orddict:new(), PartVersions0, ordsets:new()},
-            filter_seqs(ActiveParts, EndSeqs))
+            couch_set_view_util:filter_seqs(ActiveParts, EndSeqs))
     end,
     case PassiveParts of
     [] ->
@@ -552,7 +544,7 @@ load_changes(Owner, Updater, Group, MapQueue, ActiveParts, PassiveParts,
                   [GroupType, DDocId, SetName]),
         {FinalChangesCount, MaxSeqs2, PartVersions2, Rollbacks2} = lists:foldl(
             FoldFun, {ActiveChangesCount, MaxSeqs, PartVersions, Rollbacks},
-            filter_seqs(PassiveParts, EndSeqs))
+            couch_set_view_util:filter_seqs(PassiveParts, EndSeqs))
     end,
     {FinalChangesCount3, MaxSeqs3, PartVersions3, Rollbacks3} =
         load_changes_from_passive_parts_in_mailbox(UprPid,

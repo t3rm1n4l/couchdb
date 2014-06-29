@@ -25,6 +25,7 @@
 -export([mark_as_unindexable/2, mark_as_indexable/2]).
 -export([monitor_partition_update/4, demonitor_partition_update/2]).
 -export([reset_utilization_stats/1, get_utilization_stats/1]).
+-export([request_seqs/1]).
 
 %% gen_server callbacks
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2,
@@ -197,6 +198,17 @@ request_group_info(Pid) ->
     case gen_server:call(Pid, request_group_info, infinity) of
     {ok, GroupInfoList} ->
         {ok, GroupInfoList};
+    Error ->
+        throw(Error)
+    end.
+
+
+-spec request_seqs(pid()) -> partition_seqs().
+request_seqs(Pid) ->
+    case gen_server:call(Pid, request_stats_pid, infinity) of
+    {StatsPid, Partitions} ->
+        {ok, Seqs} = couch_set_view_util:get_seqs(StatsPid, Partitions),
+        Seqs;
     Error ->
         throw(Error)
     end.
@@ -709,6 +721,11 @@ handle_call({test_rollback, RollbackSeqs}, _From, State0) ->
 handle_call(request_group_info, _From, State) ->
     GroupInfo = get_group_info(State),
     {reply, {ok, GroupInfo}, State, ?GET_TIMEOUT(State)};
+
+handle_call(request_stats_pid, _From, State) ->
+    Pid = ?stats_pid(State),
+    Partitions = [P || {P, _} <- ?set_seqs(State#state.group)],
+    {reply, {Pid, Partitions}, State, ?GET_TIMEOUT(State)};
 
 handle_call(get_data_size, _From, State) ->
     DataSizeInfo = get_data_size_info(State),
@@ -2620,19 +2637,24 @@ cleaner(#state{group = Group}) ->
     Duration = timer:now_diff(os:timestamp(), StartTime) / 1000000,
     {clean_group, NewGroup, TotalPurgedCount, Duration}.
 
-
 -spec indexable_partition_seqs(#state{}) -> partition_seqs().
 indexable_partition_seqs(#state{group = Group} = State) ->
     CurPartitions = [P || {P, _} <- ?set_seqs(Group)],
-    {ok, CurSeqs} = case ?set_unindexable_seqs(Group) of
+    {ok, Seqs} = couch_set_view_util:get_seqs(?stats_pid(State), CurPartitions),
+    indexable_partition_seqs(State, Seqs).
+
+-spec indexable_partition_seqs(#state{}, partition_seqs()) -> partition_seqs().
+indexable_partition_seqs(#state{group = Group}, Seqs) ->
+    CurPartitions = [P || {P, _} <- ?set_seqs(Group)],
+    CurSeqs = case ?set_unindexable_seqs(Group) of
     [] ->
-        couch_set_view_util:get_seqs(?stats_pid(State), CurPartitions);
+        couch_set_view_util:filter_seqs(CurPartitions, Seqs);
     _ ->
         ReplicasOnTransfer = ?set_replicas_on_transfer(Group),
         Partitions = ordsets:union(CurPartitions, ReplicasOnTransfer),
         % Index unindexable replicas on transfer though (as the reason for the
         % transfer is to become active and indexable).
-        couch_set_view_util:get_seqs(?stats_pid(State), Partitions)
+        couch_set_view_util:filter_seqs(Partitions, Seqs)
     end,
     CurSeqs.
 
@@ -2642,6 +2664,11 @@ active_partition_seqs(#state{group = Group} = State) ->
     ActiveParts = couch_set_view_util:decode_bitmask(?set_abitmask(Group)),
     {ok, CurSeqs} = couch_set_view_util:get_seqs(?stats_pid(State), ActiveParts),
     CurSeqs.
+
+-spec active_partition_seqs(#state{}, partition_seqs()) -> partition_seqs().
+active_partition_seqs(#state{group = Group}, Seqs) ->
+    ActiveParts = couch_set_view_util:decode_bitmask(?set_abitmask(Group)),
+    couch_set_view_util:filter_seqs(ActiveParts, Seqs).
 
 
 -spec start_compactor(#state{}, compact_fun()) -> #state{}.
@@ -2852,7 +2879,14 @@ start_updater(#state{updater_pid = nil, updater_state = not_running} = State, Op
         replica_partitions = ReplicaParts,
         waiting_list = WaitList
     } = State,
-    CurSeqs = indexable_partition_seqs(State),
+    case couch_util:get_value(update_seqs, Options) of
+    undefined ->
+        CurPartitions = [P || {P, _} <- ?set_seqs(Group)],
+        {ok, Seqs} = couch_set_view_util:get_seqs(?stats_pid(State), CurPartitions);
+    Seqs ->
+        Seqs
+    end,
+    CurSeqs = indexable_partition_seqs(State, Seqs),
     case CurSeqs > ?set_seqs(Group) of
     true ->
         do_start_updater(State, CurSeqs, Options);
@@ -3258,14 +3292,24 @@ process_view_group_request(#set_view_group_req{stale = false} = Req, From, State
         waiting_list = WaitList,
         replica_partitions = ReplicaParts
     } = State,
-    #set_view_group_req{debug = Debug} = Req,
-    CurSeqs = active_partition_seqs(State),
+    #set_view_group_req{seqs = Seqs, debug = Debug} = Req,
+    % Only used by unit tests
+    % Actual query request will always contain seqs
+    case Seqs of
+    [] ->
+        CurPartitions = [P || {P, _} <- ?set_seqs(Group)],
+        {ok, Seqs2} = couch_set_view_util:get_seqs(?stats_pid(State), CurPartitions);
+    _ ->
+        Seqs2 = Seqs
+    end,
+    CurSeqs = active_partition_seqs(State, Seqs2),
     Waiter = #waiter{from = From, debug = Debug, seqs = CurSeqs},
+    Options = [{update_seqs, Seqs2}],
     case reply_with_group(Group, ReplicaParts, [Waiter]) of
     [] ->
-        start_updater(State);
+        start_updater(State, Options);
     _ ->
-        start_updater(State#state{waiting_list = [Waiter | WaitList]})
+        start_updater(State#state{waiting_list = [Waiter | WaitList]}, Options)
     end;
 
 process_view_group_request(#set_view_group_req{stale = ok} = Req, From, State) ->
@@ -3282,13 +3326,23 @@ process_view_group_request(#set_view_group_req{stale = update_after} = Req, From
         group = Group,
         replica_partitions = ReplicaParts
     } = State,
-    #set_view_group_req{debug = Debug} = Req,
+    #set_view_group_req{seqs = Seqs, debug = Debug} = Req,
+    % Only used by unit tests
+    % Actual query request will always contain seqs
+    case Seqs of
+    [] ->
+        CurPartitions = [P || {P, _} <- ?set_seqs(Group)],
+        {ok, Seqs2} = couch_set_view_util:get_seqs(?stats_pid(State), CurPartitions);
+    _ ->
+        Seqs2 = Seqs
+    end,
+    Options = [{update_seqs, Seqs2}],
     [] = reply_with_group(Group, ReplicaParts, [#waiter{from = From, debug = Debug}]),
     case State#state.updater_pid of
     Pid when is_pid(Pid) ->
         State;
     nil ->
-        start_updater(State)
+        start_updater(State, Options)
     end.
 
 

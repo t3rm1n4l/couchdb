@@ -95,7 +95,8 @@
 get_group(Mod, SetName, DDoc, #set_view_group_req{type = main} = Req) ->
     GroupPid = get_group_pid(Mod, SetName, DDoc,
         Req#set_view_group_req.category),
-    case couch_set_view_group:request_group(GroupPid, Req) of
+    NewReq = update_req_seqs(Req, GroupPid),
+    case couch_set_view_group:request_group(GroupPid, NewReq) of
     {ok, Group} ->
         {ok, Group};
     {error, view_undefined} ->
@@ -112,7 +113,8 @@ get_group(Mod, SetName, DDoc, #set_view_group_req{type = replica} = Req) ->
     nil ->
         throw({error, <<"Requested replica group doesn't exist">>});
     ReplicaPid ->
-        case couch_set_view_group:request_group(ReplicaPid, Req) of
+        NewReq = update_req_seqs(Req, ReplicaPid),
+        case couch_set_view_group:request_group(ReplicaPid, NewReq) of
         {ok, Group} ->
             {ok, Group};
         {error, view_undefined} ->
@@ -1307,3 +1309,12 @@ get_ddoc_ids_with_sig(Mod, SetName, ViewGroupSig) ->
             end
         end,
         [], DDocList).
+
+update_req_seqs(Req, GroupPid) ->
+    case Req#set_view_group_req.stale of
+    ok ->
+        Req;
+    _ ->
+        Seqs = couch_set_view_group:request_seqs(GroupPid),
+        Req#set_view_group_req{seqs = Seqs}
+    end.

@@ -140,7 +140,8 @@
     wanted_partitions = []  :: [partition_id()],
     debug = false           :: boolean(),
     type = main             :: set_view_group_type(),
-    category = prod         :: 'prod' | 'dev'
+    category = prod         :: 'prod' | 'dev',
+    seqs = []               :: partition_seqs()
 }).
 
 -record(set_view_transition, {
