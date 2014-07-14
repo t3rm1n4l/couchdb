@@ -483,6 +483,7 @@ load_changes(Owner, Updater, Group, MapQueue, ActiveParts, PassiveParts,
                                 {Count, MarkerEndSeq}
                             end;
                         (#upr_doc{} = Item, {Count, AccEndSeq}) ->
+                            ?LOG_INFO("upr_doc_received key:~p partition:~p seqno:~p", [Item#upr_doc.id, Item#upr_doc.partition, Item#upr_doc.seq]),
                             queue_doc(
                                 Item, MapQueue, Group,
                                 MaxDocSize, InitialBuild),
