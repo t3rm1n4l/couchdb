@@ -29,6 +29,7 @@
 
 #include "erl_nif_compat.h"
 #include "nif_stl_allocator.h"
+#include "taskqueue.h"
 
 class MapReduceError;
 
@@ -79,6 +80,14 @@ typedef struct {
     int                                          emitKvSize;
     int                                          maxEmitKvSize;
 } map_reduce_ctx_t;
+
+typedef struct map_task_arg{
+    ErlNifEnv                                   *env;
+    map_reduce_ctx_t                            *ctx;
+    ErlNifBinary                                docBin;
+    ErlNifBinary                                metaBin;
+    ErlNifPid                                   pid;
+} map_task_arg_t;
 
 
 void initContext(map_reduce_ctx_t *ctx, const function_sources_list_t &funs);
