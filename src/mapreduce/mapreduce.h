@@ -79,6 +79,7 @@ typedef struct {
     volatile time_t                              taskStartTime;
     int                                          emitKvSize;
     int                                          maxEmitKvSize;
+    unsigned int                                 workerId;
 } map_reduce_ctx_t;
 
 typedef struct map_task_arg{

@@ -36,6 +36,22 @@
     } while(0)
 #endif
 
+#ifdef WIN32
+static unsigned int ATOMIC_ADD(volatile unsigned int *dest,
+                               unsigned int value) {
+    LONG old = InterlockedExchangeAdd((LPLONG)dest, (LONG)value);
+    return (unsigned int) old;
+}
+#elif defined(HAVE_ATOMIC_H) && defined(__SUNPRO_C)
+#include <atomic.h>
+static inline unsigned int ATOMIC_ADD(volatile unsigned int *dest,
+                                      unsigned int value) {
+    return atomic_add_int(dest, value);
+}
+#else
+#define ATOMIC_ADD(i, by) __sync_fetch_and_add(i, by)
+#endif
+
 #include "erl_nif_compat.h"
 #include "mapreduce.h"
 
@@ -49,6 +65,7 @@ static ERL_NIF_TERM ATOM_ERROR;
 
 // maxTaskDuration is in seconds
 static volatile int                                maxTaskDuration = 5;
+static volatile unsigned int                       workerTurn = 0;
 static int                                         maxKvSize = 1 * 1024 * 1024;
 static ErlNifResourceType                          *MAP_REDUCE_CTX_RES;
 static ErlNifTid                                   terminatorThreadId;
@@ -105,6 +122,7 @@ ERL_NIF_TERM startMapContext(ErlNifEnv *env, int argc, const ERL_NIF_TERM argv[]
         ERL_NIF_TERM res = enif_make_resource(env, ctx);
         enif_release_resource(ctx);
 
+        ctx->workerId = ATOMIC_ADD(&workerTurn, 1) % MAX_MAP_TASKS;
         registerContext(ctx, env, argv[1]);
 
         return enif_make_tuple2(env, ATOM_OK, res);
@@ -149,7 +167,7 @@ ERL_NIF_TERM doMapDoc(ErlNifEnv *env, int argc, const ERL_NIF_TERM argv[])
         return enif_make_badarg(t->env);
     }
 
-    mapTaskQueues[ rand() % MAX_MAP_TASKS ]->enqueue(t);
+    mapTaskQueues[t->ctx->workerId]->enqueue(t);
 
     return ATOM_OK;
 }
