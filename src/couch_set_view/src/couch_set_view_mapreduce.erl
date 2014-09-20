@@ -395,16 +395,8 @@ validate_view_map_function(ViewName, MapDef) when not is_binary(MapDef) ->
     ErrorMsg = io_lib:format("The `map' field of the view `~s' is not "
                              "a json string.", [ViewName]),
     throw({error, iolist_to_binary(ErrorMsg)});
-validate_view_map_function(ViewName, MapDef) ->
-    case mapreduce:start_map_context([MapDef]) of
-    {ok, _Ctx} ->
-        ok;
-    {error, Reason} ->
-        ErrorMsg = io_lib:format("Syntax error in the map function of"
-                                 " the view `~s': ~s", [ViewName, Reason]),
-        throw({error, iolist_to_binary(ErrorMsg)})
-    end.
-
+validate_view_map_function(_ViewName, _MapDef) ->
+    ok.
 
 validate_view_reduce_function(_ViewName, undefined) ->
     ok;
