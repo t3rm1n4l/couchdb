@@ -36,11 +36,18 @@
         [exit_status, use_stdio, stderr_to_stdout, {line, 4096}, binary]).
 
 
-do_n1ql_map(_Doc) ->
-    URL = "http://google.com",
-    {ok, {Status, _, Body}} = lhttpc:request(URL, get, [], <<>>, 1000, []),
+do_n1ql_map(#doc{body = Doc0}) ->
+    Doc = binary:replace(Doc0, <<"\"">>, <<"\\\"">>, [global]),
+    Expr = erlang:get(expr),
+    URL = "http://localhost:10000/queryDoc",
+    PostBody = <<"{
+                 \"DocData\" : ", "\"", Doc/binary, "\"",
+                 ", \"DocExpr\": ", Expr/binary,
+                 "}">>,
+    {ok, {Status, _, Body}} =
+        lhttpc:request(URL, "POST", [{"Content-Type", "application/json"}], PostBody, 1000),
     ?LOG_INFO("http req result ~p ~p", [Status, Body]),
-    R = [[{<<"\"same-doc\"">>,<<"val">>}]],
+    R = [[{<<Body/binary>>,<<"null">>}]],
     {ok, R}.
 
 
