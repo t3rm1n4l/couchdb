@@ -752,8 +752,12 @@ do_maps(Group, MapQueue, WriteQueue) ->
                     deleted = false
                 },
                 try
-                    {ok, Result} = do_n1ql_map(Doc),
-                    %{ok, Result} = couch_set_view_mapreduce:map(Doc),
+                    case erlang:get(map_context) of
+                    undefined ->
+                        {ok, Result} = do_n1ql_map(Doc);
+                    _ ->
+                        {ok, Result} = couch_set_view_mapreduce:map(Doc)
+                    end,
                     % ?LOG_INFO("map:result ~p", [Result]),
                     {Result2, _} = lists:foldr(
                         fun({error, Reason}, {AccRes, Pos}) ->

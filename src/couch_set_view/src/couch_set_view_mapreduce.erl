@@ -28,11 +28,13 @@
 
 
 start_map_context(#set_view_group{views = [View]}) ->
-    %{ok, Ctx} = mapreduce:start_map_context([View#set_view.def]),
-    Ctx = "",
-    Expr = View#set_view.def,
-    erlang:put(expr, Expr),
-    erlang:put(map_context, Ctx),
+    try
+        {ok, Ctx} = mapreduce:start_map_context([View#set_view.def]),
+        erlang:put(map_context, Ctx)
+    catch _:_ ->
+        Expr = View#set_view.def,
+        erlang:put(expr, Expr)
+    end,
     ok.
 
 
