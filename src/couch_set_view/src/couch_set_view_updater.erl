@@ -46,8 +46,13 @@ do_n1ql_map(#doc{body = Doc0}) ->
                  "}">>,
     {ok, {Status, _, Body}} =
         lhttpc:request(URL, "POST", [{"Content-Type", "application/json"}], PostBody, 1000),
-    ?LOG_INFO("http req result ~p ~p", [Status, Body]),
-    R = [[{<<Body/binary>>,<<"null">>}]],
+    ?LOG_INFO("http req result ~p ~p ~p", [Status, Body, byte_size(Body)]),
+    case byte_size(Body) of
+    2 ->
+        R = [];
+    _ ->
+        R = [[{<<Body/binary>>,<<"null">>}]]
+    end,
     {ok, R}.
 
 
